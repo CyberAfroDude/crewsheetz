@@ -877,14 +877,95 @@ input,select,textarea,button{font-family:var(--font);}
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./supabase-config.js"></script>
 <script>
 var S={user:null,jobs:[],apps:[],invites:[],filter:'all',curJob:null,prev:null};
 var AVC=['#2B3340','#00B89A','#7C5CBF','#C05800','#1B6B3A','#8B2E2E'];
+var DB={client:null,enabled:false};
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0]||'';}).join('').slice(0,2).toUpperCase();}
 function avc(n){return AVC[((n||'').charCodeAt(0)+((n||'').charCodeAt(1)||0))%AVC.length];}
 function uid(){return Math.random().toString(36).slice(2,9);}
 function slug(n){return(n||'').toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');}
 function tod(){return new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'});}
+function hasSupabaseConfig(){
+  return !!(window.__SUPABASE__&&window.__SUPABASE__.url&&window.__SUPABASE__.anonKey);
+}
+function initSupabase(){
+  if(!window.supabase||!hasSupabaseConfig())return;
+  DB.client=window.supabase.createClient(window.__SUPABASE__.url,window.__SUPABASE__.anonKey);
+  DB.enabled=true;
+}
+function safeLocalStore(){
+  try{
+    localStorage.setItem('crewsheetz_state',JSON.stringify(S));
+  }catch(e){}
+}
+function safeLocalLoad(){
+  try{
+    var raw=localStorage.getItem('crewsheetz_state');
+    if(!raw)return false;
+    var parsed=JSON.parse(raw);
+    if(!parsed||typeof parsed!=='object')return false;
+    S={
+      user:parsed.user||null,
+      jobs:Array.isArray(parsed.jobs)?parsed.jobs:[],
+      apps:Array.isArray(parsed.apps)?parsed.apps:[],
+      invites:Array.isArray(parsed.invites)?parsed.invites:[],
+      filter:'all',
+      curJob:null,
+      prev:null
+    };
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+async function loadRemoteState(){
+  if(!DB.enabled)return false;
+  try{
+    var q=await DB.client.from('app_state').select('payload').eq('id',1).single();
+    if(q.error||!q.data||!q.data.payload)return false;
+    var p=q.data.payload;
+    S={
+      user:p.user||null,
+      jobs:Array.isArray(p.jobs)?p.jobs:[],
+      apps:Array.isArray(p.apps)?p.apps:[],
+      invites:Array.isArray(p.invites)?p.invites:[],
+      filter:'all',
+      curJob:null,
+      prev:null
+    };
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+async function persistRemoteState(){
+  if(!DB.enabled)return;
+  try{
+    await DB.client.from('app_state').upsert({
+      id:1,
+      payload:{
+        user:S.user,
+        jobs:S.jobs,
+        apps:S.apps,
+        invites:S.invites
+      },
+      updated_at:new Date().toISOString()
+    });
+  }catch(e){}
+}
+function persistState(){
+  safeLocalStore();
+  persistRemoteState();
+}
+async function bootstrapState(){
+  initSupabase();
+  var loaded=await loadRemoteState();
+  if(!loaded)safeLocalLoad();
+  if(S.user)buildShell();
+}
 
 function toast(msg,type){
   var t=document.getElementById('toast');
@@ -942,6 +1023,7 @@ function doSU(){
 function makeUser(name,email,role,crRole,ind,rate,loc){
   S.user={name:name,email:email,role:role,crRole:crRole||'Crew Member',ind:ind||'General',rate:rate||'',loc:loc||''};
   buildShell();toast('Welcome, '+name.split(' ')[0]+'! 👋','t-ok');
+  persistState();
 }
 
 // SHELL
@@ -996,6 +1078,7 @@ function logout(){
   S={user:null,jobs:[],apps:[],invites:[],filter:'all',curJob:null,prev:null};
   document.getElementById('tright').innerHTML='<button class="btn btn-ghost-light btn-sm" onclick="openAuth(\'signin\')">Sign in</button><button class="btn btn-teal btn-sm" onclick="openAuth(\'signup\')">Get started free</button>';
   showView('view-landing');
+  persistState();
 }
 
 // JOB SUBMIT
@@ -1011,6 +1094,7 @@ function submitJob(){
   closeM('m-job');
   document.getElementById('m-link-url').textContent='crewsheetz.com/jobs/'+j.id;
   openM('m-link');renderProd();
+  persistState();
 }
 
 // PRODUCER
@@ -1055,7 +1139,7 @@ function jRow(j){
   return'<div class="row"><div class="av" style="background:var(--slate-700);font-size:18px;color:var(--teal);">📋</div><div class="ri"><div class="ri-name">'+j.role+'</div><div class="ri-meta">'+j.proj+' · '+j.ind+' · '+j.loc+' · '+j.rate+'</div><div class="ri-sub" style="font-family:monospace;font-size:11px;color:var(--chalk-400);">'+url+'</div></div><div class="row-act"><span class="bdg bdg-new">'+ct+' sub'+(ct!==1?'s':'')+'</span><button class="copy-btn" onclick="cLV(\''+url+'\')">Copy link</button><button class="btn btn-outline btn-sm" onclick="viewJP(\''+j.id+'\')">Preview</button></div></div>';
 }
 function cLV(v){if(navigator.clipboard)navigator.clipboard.writeText(v);toast('Link copied ✓','t-ok');}
-function updS(id,val){if(!val)return;var a=S.apps.find(function(x){return x.id===id;});if(a){a.status=val;renderProd();toast('Status updated to '+val);}}
+function updS(id,val){if(!val)return;var a=S.apps.find(function(x){return x.id===id;});if(a){a.status=val;renderProd();toast('Status updated to '+val);persistState();}}
 
 // JOB PAGE
 function viewJP(jid){
@@ -1090,6 +1174,7 @@ function submitApp(){
   S.apps.push(a);
   ['ap-fn','ap-ln','ap-em','ap-ro','ap-ms','ap-rl'].forEach(function(i){document.getElementById(i).value='';});
   closeM('m-apply');toast('Application submitted — it\'s in their inbox ✓','t-ok');
+  persistState();
 }
 
 // CREW PAGE
@@ -1140,6 +1225,7 @@ function sendInvite(){
   document.getElementById('inv-j').value='';document.getElementById('inv-m').value='';
   closeM('m-invite');toast('Invite sent ✓','t-ok');
   document.getElementById('inv-ct').textContent=S.invites.length;
+  persistState();
 }
 
 // CREW DASHBOARD
@@ -1156,6 +1242,7 @@ function rCApps(){var el=document.getElementById('c-apps-list');if(el)el.innerHT
 function rCInv(){var el=document.getElementById('c-inv-list');if(el)el.innerHTML=S.invites.length===0?empt('✉️','No invites yet',''):S.invites.map(function(iv){return'<div class="row"><div class="av" style="background:var(--teal);color:var(--slate-900);">'+ini(iv.from)+'</div><div class="ri"><div class="ri-name">Invited by '+iv.from+'</div><div class="ri-meta">'+iv.role+' on '+iv.proj+' · '+iv.date+'</div></div><div class="row-act"><span class="bdg bdg-new">pending</span></div></div>';}).join('');}
 
 function empt(ico,h,p,cta){return'<div class="empty"><div class="empty-ico">'+ico+'</div><h3>'+h+'</h3>'+(p?'<p>'+p+'</p>':'')+(cta?'<div>'+cta+'</div>':'')+'</div>';}
+bootstrapState();
 </script>
 </body>
 </html>
