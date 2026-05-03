@@ -880,7 +880,7 @@ input,select,textarea,button{font-family:var(--font);}
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="./supabase-config.js"></script>
 <script>
-var S={user:null,jobs:[],apps:[],invites:[],filter:'all',curJob:null,prev:null};
+var S={user:null,jobs:[],apps:[],invites:[],crewProfiles:[],filter:'all',curJob:null,prev:null};
 var AVC=['#2B3340','#00B89A','#7C5CBF','#C05800','#1B6B3A','#8B2E2E'];
 var DB={client:null,enabled:false};
 function ini(n){return(n||'?').split(' ').map(function(w){return w[0]||'';}).join('').slice(0,2).toUpperCase();}
@@ -888,6 +888,35 @@ function avc(n){return AVC[((n||'').charCodeAt(0)+((n||'').charCodeAt(1)||0))%AV
 function uid(){return Math.random().toString(36).slice(2,9);}
 function slug(n){return(n||'').toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');}
 function tod(){return new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'});}
+function absUrl(path){return window.location.origin+path;}
+function rolePathSegment(role){
+  var words=(role||'crew').trim().split(/\s+/).filter(Boolean);
+  if(words.length>=2)return words.map(function(w){return w[0]||'';}).join('').slice(0,4).toLowerCase();
+  return slug(role||'crew').slice(0,12)||'crew';
+}
+function crewPath(user){return '/'+rolePathSegment(user&&user.crRole)+'/'+slug(user&&user.name||'crew-member');}
+function jobPath(job){return '/jobs/'+(job.slug||slug(job.proj||job.role||job.id||'job'));}
+function ensureJobSlug(base){
+  var root=slug(base)||('job-'+uid());
+  var candidate=root,i=2;
+  while(S.jobs.some(function(j){return j.slug===candidate;})){candidate=root+'-'+i;i++;}
+  return candidate;
+}
+function routeTo(path,replace){if(replace)window.history.replaceState({},'',path);else window.history.pushState({},'',path);}
+function upsertCrewProfile(user){
+  if(!user||user.role!=='crew')return;
+  var profile={
+    name:user.name,
+    crRole:user.crRole||'Crew Member',
+    ind:user.ind||'General',
+    rate:user.rate||'Contact for rate',
+    loc:user.loc||'Location not set',
+    bio:'Experienced '+(user.crRole||'crew member')+' based in '+(user.loc||'your city')+'. Open to '+(user.ind||'General')+' projects. Reach out through the buttons below or invite me to apply to your posting.'
+  };
+  var key=slug(user.name)+'|'+rolePathSegment(user.crRole);
+  var idx=S.crewProfiles.findIndex(function(p){return (slug(p.name)+'|'+rolePathSegment(p.crRole))===key;});
+  if(idx>=0)S.crewProfiles[idx]=profile;else S.crewProfiles.push(profile);
+}
 function hasSupabaseConfig(){
   return !!(window.__SUPABASE__&&window.__SUPABASE__.url&&window.__SUPABASE__.anonKey);
 }
@@ -912,6 +941,7 @@ function safeLocalLoad(){
       jobs:Array.isArray(parsed.jobs)?parsed.jobs:[],
       apps:Array.isArray(parsed.apps)?parsed.apps:[],
       invites:Array.isArray(parsed.invites)?parsed.invites:[],
+      crewProfiles:Array.isArray(parsed.crewProfiles)?parsed.crewProfiles:[],
       filter:'all',
       curJob:null,
       prev:null
@@ -932,6 +962,7 @@ async function loadRemoteState(){
       jobs:Array.isArray(p.jobs)?p.jobs:[],
       apps:Array.isArray(p.apps)?p.apps:[],
       invites:Array.isArray(p.invites)?p.invites:[],
+      crewProfiles:Array.isArray(p.crewProfiles)?p.crewProfiles:[],
       filter:'all',
       curJob:null,
       prev:null
@@ -950,7 +981,8 @@ async function persistRemoteState(){
         user:S.user,
         jobs:S.jobs,
         apps:S.apps,
-        invites:S.invites
+        invites:S.invites,
+        crewProfiles:S.crewProfiles
       },
       updated_at:new Date().toISOString()
     });
@@ -965,6 +997,7 @@ async function bootstrapState(){
   var loaded=await loadRemoteState();
   if(!loaded)safeLocalLoad();
   if(S.user)buildShell();
+  handleRoute();
 }
 
 function toast(msg,type){
@@ -980,10 +1013,25 @@ function showView(id){
   ['view-landing','view-app','view-job-page','view-crew-page'].forEach(function(v){document.getElementById(v).style.display='none';});
   document.getElementById(id).style.display='block';
 }
-function goHome(){showView('view-landing');}
-function goBack(){showView(S.prev||(S.user?'view-app':'view-landing'));}
+function goHome(){routeTo('/',false);showView('view-landing');}
+function goBack(){routeTo('/',false);showView(S.prev||(S.user?'view-app':'view-landing'));}
 function copyV(id){var el=document.getElementById(id);if(el&&navigator.clipboard)navigator.clipboard.writeText(el.textContent);toast('Link copied ✓','t-ok');}
 function showUp(){toast('Pro upgrade coming soon — $9/month removes ads and unlocks more','t-info');}
+function handleRoute(){
+  var parts=window.location.pathname.replace(/^\/+|\/+$/g,'').split('/').filter(Boolean);
+  if(parts.length===0){if(!S.user)showView('view-landing');return;}
+  if(parts[0]==='jobs'&&parts[1]){
+    var job=S.jobs.find(function(j){return (j.slug||j.id)===parts[1];});
+    if(job)viewJP(job.id,true);
+    return;
+  }
+  if(parts.length===2){
+    var roleSeg=parts[0],nameSlug=parts[1];
+    var profile=S.crewProfiles.find(function(p){return rolePathSegment(p.crRole)===roleSeg&&slug(p.name)===nameSlug;});
+    if(profile){showCrewProfile(profile,true);return;}
+    if(S.user&&S.user.role==='crew'&&rolePathSegment(S.user.crRole)===roleSeg&&slug(S.user.name)===nameSlug){prevCrew(true);}
+  }
+}
 
 // AUTH
 function openAuth(mode){
@@ -1022,6 +1070,7 @@ function doSU(){
 }
 function makeUser(name,email,role,crRole,ind,rate,loc){
   S.user={name:name,email:email,role:role,crRole:crRole||'Crew Member',ind:ind||'General',rate:rate||'',loc:loc||''};
+  upsertCrewProfile(S.user);
   buildShell();toast('Welcome, '+name.split(' ')[0]+'! 👋','t-ok');
   persistState();
 }
@@ -1052,7 +1101,7 @@ function buildShell(){
     document.getElementById('c-pra').textContent=u.rate||'—';
     document.getElementById('c-pe').textContent=u.email;
     document.getElementById('c-pi').textContent=u.ind||'—';
-    document.getElementById('c-prof-url').textContent='crewsheetz.com/crew/'+slug(u.name);
+    document.getElementById('c-prof-url').textContent=absUrl(crewPath(u));
     renderCrew();setAP('c-dash','sb-crew');
   }
   showView('view-app');
@@ -1075,7 +1124,7 @@ function gP(btn,pid){
 }
 function goPageById(id){var btn=document.querySelector('[data-p="'+id+'"]');if(btn)gP(btn,id);}
 function logout(){
-  S={user:null,jobs:[],apps:[],invites:[],filter:'all',curJob:null,prev:null};
+  S={user:null,jobs:[],apps:[],invites:[],crewProfiles:S.crewProfiles||[],filter:'all',curJob:null,prev:null};
   document.getElementById('tright').innerHTML='<button class="btn btn-ghost-light btn-sm" onclick="openAuth(\'signin\')">Sign in</button><button class="btn btn-teal btn-sm" onclick="openAuth(\'signup\')">Get started free</button>';
   showView('view-landing');
   persistState();
@@ -1087,12 +1136,12 @@ function submitJob(){
   var p=document.getElementById('jj-p').value.trim();
   var d=document.getElementById('jj-de').value.trim();
   if(!r||!p||!d){toast('Fill in role, project name, and description');return;}
-  var j={id:uid(),pId:S.user.email,pName:S.user.name,role:r,proj:p,ind:document.getElementById('jj-i').value||'General',loc:document.getElementById('jj-l').value||'TBD',rate:document.getElementById('jj-ra').value||'TBD',dates:document.getElementById('jj-d').value||'TBD',desc:d,status:'open',date:tod()};
+  var j={id:uid(),slug:ensureJobSlug(p),pId:S.user.email,pName:S.user.name,role:r,proj:p,ind:document.getElementById('jj-i').value||'General',loc:document.getElementById('jj-l').value||'TBD',rate:document.getElementById('jj-ra').value||'TBD',dates:document.getElementById('jj-d').value||'TBD',desc:d,status:'open',date:tod()};
   S.jobs.push(j);S.curJob=j;
   ['jj-r','jj-p','jj-l','jj-ra','jj-d','jj-de'].forEach(function(i){document.getElementById(i).value='';});
   document.getElementById('jj-i').value='';
   closeM('m-job');
-  document.getElementById('m-link-url').textContent='crewsheetz.com/jobs/'+j.id;
+  document.getElementById('m-link-url').textContent=absUrl(jobPath(j));
   openM('m-link');renderProd();
   persistState();
 }
@@ -1135,14 +1184,14 @@ function aRow(a,jobs){
 }
 function jRow(j){
   var ct=S.apps.filter(function(a){return a.jobId===j.id;}).length;
-  var url='crewsheetz.com/jobs/'+j.id;
+  var url=absUrl(jobPath(j));
   return'<div class="row"><div class="av" style="background:var(--slate-700);font-size:18px;color:var(--teal);">📋</div><div class="ri"><div class="ri-name">'+j.role+'</div><div class="ri-meta">'+j.proj+' · '+j.ind+' · '+j.loc+' · '+j.rate+'</div><div class="ri-sub" style="font-family:monospace;font-size:11px;color:var(--chalk-400);">'+url+'</div></div><div class="row-act"><span class="bdg bdg-new">'+ct+' sub'+(ct!==1?'s':'')+'</span><button class="copy-btn" onclick="cLV(\''+url+'\')">Copy link</button><button class="btn btn-outline btn-sm" onclick="viewJP(\''+j.id+'\')">Preview</button></div></div>';
 }
 function cLV(v){if(navigator.clipboard)navigator.clipboard.writeText(v);toast('Link copied ✓','t-ok');}
 function updS(id,val){if(!val)return;var a=S.apps.find(function(x){return x.id===id;});if(a){a.status=val;renderProd();toast('Status updated to '+val);persistState();}}
 
 // JOB PAGE
-function viewJP(jid){
+function viewJP(jid,replaceRoute){
   var j=S.jobs.find(function(x){return x.id===jid;});if(!j)return;
   S.prev=S.user?'view-app':'view-landing';S.curJob=j;
   document.getElementById('jp-ind').textContent=j.ind||'General';
@@ -1154,12 +1203,13 @@ function viewJP(jid){
   document.getElementById('jp-desc').textContent=j.desc;
   document.getElementById('jp-pav').textContent=ini(j.pName||'P');
   document.getElementById('jp-pname').textContent=j.pName||'Organizer';
-  document.getElementById('jp-url').textContent='crewsheetz.com/jobs/'+j.id;
+  document.getElementById('jp-url').textContent=absUrl(jobPath(j));
   document.getElementById('jp-pr').textContent=j.role;
   document.getElementById('jp-pra').textContent=j.rate;
   document.getElementById('jp-pd').textContent=j.dates;
   document.getElementById('jp-pl').textContent=j.loc;
   document.getElementById('m-ap-sub').textContent=j.role+' on '+j.proj;
+  routeTo(jobPath(j),!!replaceRoute);
   showView('view-job-page');
 }
 function prevJob(){if(S.curJob)viewJP(S.curJob.id);closeM('m-link');}
@@ -1178,8 +1228,8 @@ function submitApp(){
 }
 
 // CREW PAGE
-function prevCrew(){
-  if(!S.user)return;var u=S.user;
+function showCrewProfile(u,replaceRoute){
+  if(!u)return;
   S.prev='view-app';
   var av=document.getElementById('cp-av');av.textContent=ini(u.name);av.style.background='var(--teal)';av.style.color='var(--slate-900)';
   document.getElementById('cp-name').textContent=u.name;
@@ -1187,13 +1237,15 @@ function prevCrew(){
   document.getElementById('cp-loc').textContent=u.loc||'Location not set';
   document.getElementById('cp-rate').textContent=u.rate||'Contact for rate';
   document.getElementById('cp-ind').textContent=u.ind||'General';
-  document.getElementById('cp-bio').textContent='Experienced '+u.crRole+' based in '+(u.loc||'your city')+'. Open to '+u.ind+' projects. Reach out through the buttons below or invite me to apply to your posting.';
+  document.getElementById('cp-bio').textContent=u.bio||('Experienced '+u.crRole+' based in '+(u.loc||'your city')+'. Open to '+u.ind+' projects. Reach out through the buttons below or invite me to apply to your posting.');
   document.getElementById('cp-cta-h').textContent='Work with '+u.name.split(' ')[0];
-  document.getElementById('cp-url').textContent='crewsheetz.com/crew/'+slug(u.name);
+  document.getElementById('cp-url').textContent=absUrl(crewPath(u));
   document.getElementById('cp-month').textContent=new Date().toLocaleDateString('en-US',{month:'long',year:'numeric'});
   buildCal();buildCreds();popIS();
+  routeTo(crewPath(u),!!replaceRoute);
   showView('view-crew-page');
 }
+function prevCrew(replaceRoute){if(!S.user)return;showCrewProfile(S.user,replaceRoute);}
 function buildCal(){
   var cal=document.getElementById('cp-cal');if(!cal)return;
   var days=['Su','Mo','Tu','We','Th','Fr','Sa'];
@@ -1242,6 +1294,7 @@ function rCApps(){var el=document.getElementById('c-apps-list');if(el)el.innerHT
 function rCInv(){var el=document.getElementById('c-inv-list');if(el)el.innerHTML=S.invites.length===0?empt('✉️','No invites yet',''):S.invites.map(function(iv){return'<div class="row"><div class="av" style="background:var(--teal);color:var(--slate-900);">'+ini(iv.from)+'</div><div class="ri"><div class="ri-name">Invited by '+iv.from+'</div><div class="ri-meta">'+iv.role+' on '+iv.proj+' · '+iv.date+'</div></div><div class="row-act"><span class="bdg bdg-new">pending</span></div></div>';}).join('');}
 
 function empt(ico,h,p,cta){return'<div class="empty"><div class="empty-ico">'+ico+'</div><h3>'+h+'</h3>'+(p?'<p>'+p+'</p>':'')+(cta?'<div>'+cta+'</div>':'')+'</div>';}
+window.addEventListener('popstate',handleRoute);
 bootstrapState();
 </script>
 </body>
